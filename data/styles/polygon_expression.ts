@@ -7,25 +7,8 @@ const polygonExpression: Style = {
     symbolizers: [{
       kind: 'Fill',
       color: {
-        type: 'functioncall',
-        name: 'peter',
-        args: [{
-          type: 'literal',
-          value: '#000000'
-        }, {
-          type: 'property',
-          name: 'myProp'
-        }, {
-          type: 'functioncall',
-          name: 'hans',
-          args: [{
-            type: 'literal',
-            value: 76
-          }, {
-            type: 'literal',
-            value: 12
-          }]
-        }]
+        name: 'strConcat',
+        args: ['#00', '00', '00']
       }
     }]
   }]

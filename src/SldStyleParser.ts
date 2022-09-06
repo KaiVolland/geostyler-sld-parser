@@ -3,7 +3,6 @@ import {
   StyleParser,
   Style,
   Rule,
-  FunctionFilter,
   ComparisonOperator,
   CombinationOperator,
   ScaleDenominator,
@@ -22,23 +21,20 @@ import {
   ColorMapEntry,
   Channel,
   ContrastEnhancement,
-  StrMatchesFunctionFilter,
   UnsupportedProperties,
   ReadStyleResult,
   WriteStyleResult,
   RangeFilter,
   Expression,
-  LiteralValue,
-  FunctionCall,
-  PropertyName,
-  isExpression,
-  isFunctionCall,
-  isPropertyValue,
-  isPropertyName,
-  isLiteralValue,
   isCombinationFilter,
   isComparisonFilter,
-  isNegationFilter
+  isNegationFilter,
+  GeoStylerFunction,
+  PropertyType,
+  Fproperty,
+  FstrMatches,
+  isGeoStylerFunction,
+  GeoStylerStringFunction
 } from 'geostyler-style';
 
 import {
@@ -315,7 +311,7 @@ export class SldStyleParser implements StyleParser<string> {
     return name.replace(prefixMatch, '');
   }
 
-  getExpressionFromSldObject(sldObject: any): Expression {
+  getExpressionFromSldObject(sldObject: any): Expression<any> {
     const elementName = sldObject['#name'];
     switch (elementName) {
       case 'Function':
@@ -329,52 +325,42 @@ export class SldStyleParser implements StyleParser<string> {
     }
   }
 
-  getLiteralFromSldObject(sldObject: any):
-  LiteralValue<string> | LiteralValue<number> | LiteralValue<boolean> | LiteralValue<null> {
-    const result = {
-      type: 'literal',
-      value: sldObject._
-    };
+  getLiteralFromSldObject(sldObject: any): PropertyType {
     const num = parseFloat(sldObject._);
     if (!Number.isNaN(num)) {
-      result.value = num;
+      return num;
     }
-    if (result.value === 'true') {
-      result.value = true;
+    if (sldObject._ === 'true') {
+      return true;
     }
-    if (result.value === 'false') {
-      result.value = false;
+    if (sldObject._ === 'false') {
+      return false;
     }
-    return result as LiteralValue<string> | LiteralValue<number> | LiteralValue<boolean> | LiteralValue<null>;
+    return sldObject._;
   }
 
-  getFunctionFromSldObject(sldObject: any): FunctionCall {
+  getFunctionFromSldObject(sldObject: any): GeoStylerFunction {
     return {
-      type: 'functioncall',
       name: sldObject.$.name,
       args: sldObject.$$.map((sldArg: any) => this.getExpressionFromSldObject(sldArg))
     };
   }
 
-  getPropertyNameFromSldObject(sldObject: any): PropertyName {
+  getPropertyNameFromSldObject(sldObject: any): Fproperty {
     return {
-      type: 'property',
-      name: sldObject._
+      name: 'property',
+      args: [sldObject._]
     };
   }
 
-  getValueFromSldObject(sldObject: any): string {
-    return sldObject._;
-  }
-
-  getExpressionOrValueFromSldObject(sldObject: any): Expression | string | undefined {
+  getExpressionOrValueFromSldObject(sldObject: any): Expression<any> {
     if (!sldObject) {
       return undefined;
     }
     const expressionOrValue =_get(sldObject, '$$[0]');
     const expressionOrValueName = _get(sldObject, '$$[0]["#name"]');
     if (expressionOrValueName === '__text__') {
-      return this.getValueFromSldObject(expressionOrValue);
+      return sldObject._;
     } else {
       return this.getExpressionFromSldObject(expressionOrValue);
     }
@@ -395,20 +381,18 @@ export class SldStyleParser implements StyleParser<string> {
   }
 
   /**
-   * Creates a GeoStyler-Style StrMatchesFunctionFilterr from a SLD strMatches Function.
+   * Creates FstrMatches from a SLD strMatches Function.
    *
    * @param {object} sldFilter The SLD Filter
    * @return {Filter} The GeoStyler-Style FunctionFilter
    */
-  getStrMatchesFunctionFilterFromSldFilter(sldFilter: any): StrMatchesFunctionFilter {
+  getStrMatchesFunctionFilterFromSldFilter(sldFilter: any): FstrMatches {
     const propertyName = _get(sldFilter, 'Function[0].PropertyName[0]._');
     const literal = _get(sldFilter, 'Function[0].Literal[0]._');
-    const regex = new RegExp(literal);
-    return [
-      'FN_strMatches',
-      propertyName,
-      regex
-    ];
+    return {
+      name: 'strMatches',
+      args: [propertyName, literal]
+    };
   }
 
   /**
@@ -417,7 +401,7 @@ export class SldStyleParser implements StyleParser<string> {
    * @param {object} sldFilter The SLD Filter
    * @return {Filter} The GeoStyler-Style FunctionFilter
    */
-  getFunctionFilterFromSldFilter(sldFilter: any): FunctionFilter {
+  getFunctionFilterFromSldFilter(sldFilter: any): GeoStylerFunction {
     const functionName = _get(sldFilter, 'Function[0].$.name');
     switch (functionName) {
       case 'strMatches':
@@ -1457,8 +1441,7 @@ export class SldStyleParser implements StyleParser<string> {
     });
 
     if (this.sldVersion !== '1.0.0') {
-      return SymbologyEncoder.getSymbologyEncoding(
-        geoStylerStyle, rules, this.symbolizerUnits);
+      return SymbologyEncoder.getSymbologyEncoding(geoStylerStyle, rules, this.symbolizerUnits);
     }
     return {
       StyledLayerDescriptor: {
@@ -1623,7 +1606,11 @@ export class SldStyleParser implements StyleParser<string> {
   /**
    * Get the Label from a TextSymbolizer
    */
-  getSldLabelFromTextSymbolizer = (template: string): [any] => {
+  getSldLabelFromTextSymbolizer = (template: string | GeoStylerStringFunction): [any] => {
+    if (isGeoStylerFunction(template)) {
+      throw new Error ('GeoStylerStringFunction is currently not supported for TextSymbolizer.');
+    }
+
     // matches anything inside double curly braces (non-greedy)
     const placeholderReg = /^{{(.*?)}}/;
     // matches anything that does not start with curly braces
@@ -1732,21 +1719,12 @@ export class SldStyleParser implements StyleParser<string> {
         halo.Radius = [textSymbolizer.haloWidth.toString()];
       }
       if (textSymbolizer.haloColor) {
-        if (isExpression(textSymbolizer.haloColor)) {
-          haloCssParameter.push({
-            ...this.getSldExpressionFromExpression(textSymbolizer.haloColor),
-            '$': {
-              'name': 'fill'
-            }
-          });
-        } else {
-          haloCssParameter.push({
-            '_': textSymbolizer.haloColor,
-            '$': {
-              'name': 'fill'
-            }
-          });
-        }
+        haloCssParameter.push({
+          '_': textSymbolizer.haloColor,
+          '$': {
+            'name': 'fill'
+          }
+        });
       }
       if (haloCssParameter.length > 0) {
         halo.Fill = [{
@@ -1756,35 +1734,19 @@ export class SldStyleParser implements StyleParser<string> {
       sldTextSymbolizer[0].Halo = [halo];
     }
     if (textSymbolizer.color || textSymbolizer.opacity) {
-      if (isExpression(textSymbolizer.color)) {
-        sldTextSymbolizer[0].Fill = [{
-          'CssParameter': [{
-            ...this.getSldExpressionFromExpression(textSymbolizer.color),
-            '$': {
-              'name': 'fill'
-            }
-          }, {
-            '_': textSymbolizer.opacity || '1',
-            '$': {
-              'name': 'fill-opacity'
-            }
-          }]
-        }];
-      } else {
-        sldTextSymbolizer[0].Fill = [{
-          'CssParameter': [{
-            '_': textSymbolizer.color || '#000000',
-            '$': {
-              'name': 'fill'
-            }
-          }, {
-            '_': textSymbolizer.opacity || '1',
-            '$': {
-              'name': 'fill-opacity'
-            }
-          }]
-        }];
-      }
+      sldTextSymbolizer[0].Fill = [{
+        'CssParameter': [{
+          '_': textSymbolizer.color || '#000000',
+          '$': {
+            'name': 'fill'
+          }
+        }, {
+          '_': textSymbolizer.opacity || '1',
+          '$': {
+            'name': 'fill-opacity'
+          }
+        }]
+      }];
     }
 
     return {
@@ -1795,8 +1757,8 @@ export class SldStyleParser implements StyleParser<string> {
   /**
    * Get the SLD Object (readable with xml2js) from an GeoStyler-Style FillSymbolizer.
    *
-   * @param {FillSymbolizer} fillSymbolizer A GeoStyler-Style FillSymbolizer.
-   * @return {object} The object representation of a SLD PolygonSymbolizer (readable with xml2js)
+   * @param fillSymbolizer A GeoStyler-Style FillSymbolizer.
+   * @return The object representation of a SLD PolygonSymbolizer (readable with xml2js)
    */
   getSldPolygonSymbolizerFromFillSymbolizer(fillSymbolizer: FillSymbolizer): any {
     const strokePropertyMap = {
@@ -1812,6 +1774,12 @@ export class SldStyleParser implements StyleParser<string> {
     const strokeCssParameters: any[] = [];
     const fillCssParameters: any[] = [];
     let graphicFill: any;
+
+    for (const key of Object.keys(fillSymbolizer)) {
+      if (isGeoStylerFunction(fillSymbolizer[key])) {
+        fillSymbolizer[key] = this.getSldFunctionFilterFromGeoStylerFunction(fillSymbolizer[key]);
+      }
+    }
 
     if (_get(fillSymbolizer, 'graphicFill')) {
       if (_get(fillSymbolizer, 'graphicFill.kind') === 'Mark') {
@@ -1830,22 +1798,12 @@ export class SldStyleParser implements StyleParser<string> {
       .filter((property: any) => fillSymbolizer[property] !== undefined && fillSymbolizer[property] !== null)
       .forEach((property: any) => {
         if (Object.keys(fillPropertyMap).includes(property)) {
-          const expr = this.getSldExpressionFromExpression(fillSymbolizer[property]);
-          if ((typeof expr !== 'object')) {
-            fillCssParameters.push({
-              _: fillSymbolizer[property],
-              $: {
-                name: fillPropertyMap[property]
-              }
-            });
-          } else {
-            fillCssParameters.push({
-              ...expr,
-              '$': {
-                'name': fillPropertyMap[property]
-              }
-            });
-          }
+          fillCssParameters.push({
+            ...fillSymbolizer[property],
+            '$': {
+              'name': fillPropertyMap[property]
+            }
+          });
         } else if (Object.keys(strokePropertyMap).includes(property)) {
 
           let transformedValue: string = '';
@@ -1921,6 +1879,12 @@ export class SldStyleParser implements StyleParser<string> {
       }]
     };
 
+    for (const key of Object.keys(lineSymbolizer)) {
+      if (isGeoStylerFunction(lineSymbolizer[key])) {
+        lineSymbolizer[key] = this.getSldFunctionFilterFromGeoStylerFunction(lineSymbolizer[key]);
+      }
+    }
+
     const cssParameters: any[] = Object.keys(lineSymbolizer)
       .filter((property: any) => property !== 'kind' && propertyMap[property] &&
         lineSymbolizer[property] !== undefined && lineSymbolizer[property] !== null)
@@ -1940,18 +1904,8 @@ export class SldStyleParser implements StyleParser<string> {
           value = 'mitre';
         }
 
-        const expr = this.getSldExpressionFromExpression(lineSymbolizer[property]);
-        if (typeof expr !== 'object') {
-          return {
-            _: value,
-            $: {
-              name: propertyMap[property]
-            }
-          };
-        }
-
         return {
-          ...expr,
+          ...lineSymbolizer[property],
           '$': {
             'name': propertyMap[property]
           }
@@ -2013,20 +1967,25 @@ export class SldStyleParser implements StyleParser<string> {
       ]
     }];
 
+    for (const key of Object.keys(markSymbolizer)) {
+      if (isGeoStylerFunction(markSymbolizer[key])) {
+        markSymbolizer[key] = this.getSldExpressionFromExpression(markSymbolizer[key]);
+      }
+    }
+
     if (markSymbolizer.color || markSymbolizer.fillOpacity) {
       const cssParameters = [];
       if (markSymbolizer.color) {
-        const expr = this.getSldExpressionFromExpression(markSymbolizer.color);
-        if (typeof expr !== 'object') {
+        if (typeof markSymbolizer.color !== 'object') {
           cssParameters.push({
-            _: expr,
+            _: markSymbolizer.color,
             $: {
               name: 'fill'
             }
           });
         } else {
           cssParameters.push({
-            ...expr,
+            ...markSymbolizer.color,
             '$': {
               'name': 'fill'
             }
@@ -2050,21 +2009,12 @@ export class SldStyleParser implements StyleParser<string> {
       mark[0].Stroke = [{}];
       const strokeCssParameters = [];
       if (markSymbolizer.strokeColor) {
-        if (isExpression(markSymbolizer.strokeColor)) {
-          strokeCssParameters.push({
-            ...this.getSldExpressionFromExpression(markSymbolizer.strokeColor),
-            '$': {
-              'name': 'stroke'
-            }
-          });
-        } else {
-          strokeCssParameters.push({
-            '_': markSymbolizer.strokeColor,
-            '$': {
-              'name': 'stroke'
-            }
-          });
-        }
+        strokeCssParameters.push({
+          '_': markSymbolizer.strokeColor,
+          '$': {
+            'name': 'stroke'
+          }
+        });
       }
       if (markSymbolizer.strokeWidth) {
         strokeCssParameters.push({
@@ -2318,34 +2268,34 @@ export class SldStyleParser implements StyleParser<string> {
   }
 
   /**
-   * Get the SLD Object (readable with xml2js) from a GeoStyler-Style StrMatchesFunctionFilter.
-   *
-   * @param {StrMatchesFunctionFilter} functionFilter A GeoStyler-Style StrMatchesFunctionFilter.
-   * @return {object} The object representation of a SLD strMatches Function Expression.
-   */
-  getSldStrMatchesFunctionFromFunctionFilter(functionFilter: StrMatchesFunctionFilter): any {
-    const property: string = functionFilter[1];
-    const regex: RegExp = functionFilter[2];
-    return {
-      '$': {
-        'name': 'strMatches'
-      },
-      'PropertyName': [property],
-      'Literal': [regex.toString().replace(/\//g, '')]
-    };
-  }
-
-  /**
    * Get the SLD Object (readable with xml2js) from a GeoStyler-Style FunctionFilter.
    *
-   * @param {FunctionFilter} functionFilter A GeoStyler-Style FunctionFilter.
-   * @return {object} The object representation of a SLD Function Expression.
+   * @param geostylerFunction A GeoStyler-Style FunctionFilter.
+   * @return The object representation of a SLD Function Expression.
    */
-  getSldFunctionFilterFromFunctionFilter(functionFilter: FunctionFilter): any {
-    const functionName = functionFilter[0].split('FN_')[1];
-    switch (functionName) {
+  getSldFunctionFilterFromGeoStylerFunction(geostylerFunction: GeoStylerFunction): any {
+    switch (geostylerFunction.name) {
+      case 'property':
+        return {
+          '_': {
+            'PropertyName': [geostylerFunction.args[0]]
+          }
+        };
+      case 'strConcat':
+        return {
+          '$': {
+            'name': 'Concatenate'
+          },
+          ...geostylerFunction.args.map(arg => `Literal': ${arg}`)
+        };
       case 'strMatches':
-        return this.getSldStrMatchesFunctionFromFunctionFilter(functionFilter);
+        return {
+          '$': {
+            'name': 'strMatches'
+          },
+          'PropertyName': [geostylerFunction.args[0]],
+          'Literal': [geostylerFunction.args[1]]
+        };
       default:
         break;
     }
@@ -2370,8 +2320,8 @@ export class SldStyleParser implements StyleParser<string> {
 
     let propertyKey = 'PropertyName';
 
-    if (Array.isArray(key) && key[0].startsWith('FN_')) {
-      key = this.getSldFunctionFilterFromFunctionFilter(key);
+    if (isGeoStylerFunction(key)) {
+      key = this.getSldFunctionFilterFromGeoStylerFunction(key);
       propertyKey = 'Function';
     }
 
@@ -2475,24 +2425,17 @@ export class SldStyleParser implements StyleParser<string> {
     return sldFilter;
   }
 
-  getSldExpressionFromExpression(expression: Expression | string, rootExpression: boolean = true): any {
-    if (isLiteralValue(expression)) {
-      return this.getSldLiteralFromLiteral(
-        expression as LiteralValue<string> | LiteralValue<number> | LiteralValue<boolean> | LiteralValue<null>
-      );
-    }
-    if (isPropertyName(expression)) {
-      return this.getSldPropertyNameFromPropertyName(expression);
-    }
-    if (isFunctionCall(expression)) {
-      return this.getSldFunctionFromFunction(expression, rootExpression);
+  getSldExpressionFromExpression(expression: Expression<any>, rootExpression: boolean = true): any {
+    if (isGeoStylerFunction(expression)) {
+      return this.getSldFunctionFromGeoStylerFunction(expression, rootExpression);
     }
     return expression;
   }
 
-  getSldFunctionFromFunction(functionCall: FunctionCall, rootExpression: boolean): any {
-    const functionArgs = functionCall.args
-      .map((arg: Expression) => this.getSldExpressionFromExpression(arg, false), this);
+  getSldFunctionFromGeoStylerFunction(geostylerFunction: GeoStylerFunction, rootExpression: boolean): any {
+    const functionArgs = geostylerFunction?.args?.map(
+      (arg: Expression<any>) => this.getSldExpressionFromExpression(arg, false), this
+    );
 
     interface CustomArray extends Array<any> {
       $?: any;
@@ -2500,7 +2443,7 @@ export class SldStyleParser implements StyleParser<string> {
 
     const argsWithProps: CustomArray = functionArgs;
     argsWithProps.$ = {
-      'name': functionCall.name
+      'name': geostylerFunction.name
     };
     return {
       // HBD: if the expression is a root expression (i.e. corresponding to a single child element) the
@@ -2510,26 +2453,10 @@ export class SldStyleParser implements StyleParser<string> {
     };
   }
 
-  getSldPropertyNameFromPropertyName(propertyName: PropertyName): any {
+  getSldLiteralFromLiteral(literal: PropertyType): any {
     return {
-      'ogc:PropertyName': propertyName.name
+      'ogc:Literal': literal
     };
-  }
-
-  getSldLiteralFromLiteral(literal: LiteralValue<string> |
-  LiteralValue<number> | LiteralValue<boolean> | LiteralValue<null>): any {
-    return {
-      'ogc:Literal': literal.value
-    };
-  }
-
-  getSldValueOrExpression(expressionOrValue: Expression): any {
-    if (isPropertyValue(expressionOrValue)) {
-      return expressionOrValue;
-    }
-    if (isExpression(expressionOrValue)) {
-      return this.getSldExpressionFromExpression(expressionOrValue);
-    }
   }
 
 }

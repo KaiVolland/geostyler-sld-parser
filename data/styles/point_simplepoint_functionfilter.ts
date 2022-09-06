@@ -5,7 +5,10 @@ const pointSimplePoint: Style = {
   'rules': [{
     'filter': [
       '*=',
-      ['FN_strMatches', 'year', /^( )??2019,.*/],
+      {
+        name: 'strMatches',
+        args: ['year', '^( )??2019,.*']
+      },
       true
     ],
     'name': 'Small populated New Yorks',
